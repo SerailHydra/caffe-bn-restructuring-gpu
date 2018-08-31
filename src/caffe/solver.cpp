@@ -48,7 +48,7 @@ void Solver<Dtype>::Init(const SolverParameter& param) {
   CHECK_GE(param_.average_loss(), 1) << "average_loss should be non-negative.";
   CheckSnapshotWritePermissions();
   if (param_.random_seed() >= 0) {
-    Caffe::set_random_seed(param_.random_seed() + Caffe::solver_rank());
+    Caffe::set_random_seed(1701);
   }
   // Scaffolding code
   InitTrainNet();
@@ -212,7 +212,6 @@ void Solver<Dtype>::Step(int iters) {
     if (param_.test_interval() && iter_ % param_.test_interval() == 0
         && (iter_ > 0 || param_.test_initialization())) {
       if (Caffe::root_solver()) {
-        TestAll();
       }
       if (requested_early_exit_) {
         // Break out of the while loop because stop was requested while testing.
@@ -327,7 +326,6 @@ void Solver<Dtype>::Solve(const char* resume_file) {
     LOG(INFO) << "Iteration " << iter_ << ", loss = " << smoothed_loss_;
   }
   if (param_.test_interval() && iter_ % param_.test_interval() == 0) {
-    TestAll();
   }
   LOG(INFO) << "Optimization Done.";
 }

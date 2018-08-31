@@ -25,7 +25,7 @@ int64_t cluster_seedgen(void) {
   FILE* f = fopen("/dev/urandom", "rb");
   if (f && fread(&seed, 1, sizeof(seed), f) == sizeof(seed)) {
     fclose(f);
-    return seed;
+    return 1;
   }
 
   LOG(INFO) << "System entropy source not available, "
@@ -33,10 +33,10 @@ int64_t cluster_seedgen(void) {
   if (f)
     fclose(f);
 
-  pid = getpid();
+  pid = 3;
   s = time(NULL);
   seed = std::abs(((s * 181) * ((pid - 83) * 359)) % 104729);
-  return seed;
+  return 1;
 }
 
 

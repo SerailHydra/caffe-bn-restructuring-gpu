@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-#include "hdf5.h"
+#include "hdf5/serial/hdf5.h"
 
 #include "caffe/common.hpp"
 #include "caffe/layer.hpp"
@@ -521,7 +521,17 @@ Dtype Net<Dtype>::ForwardFromTo(int start, int end) {
     for (int c = 0; c < before_forward_.size(); ++c) {
       before_forward_[c]->run(i);
     }
+    printf("@jungwk: [Forward] %s\n", layer_names_[i].c_str());
+    struct timespec t_start, t_end;
+    double t_time=0;
+    cudaDeviceSynchronize();
+    clock_gettime(CLOCK_REALTIME, &t_start);
     Dtype layer_loss = layers_[i]->Forward(bottom_vecs_[i], top_vecs_[i]);
+    cudaDeviceSynchronize();
+    clock_gettime(CLOCK_REALTIME, &t_end);
+    t_time = (((double)t_end.tv_sec - (double)t_start.tv_sec)
+        + ((double)t_end.tv_nsec - (double)t_start.tv_nsec)/1000000000);
+    printf("exec time %.6f\n", t_time);
     loss += layer_loss;
     if (debug_info_) { ForwardDebugInfo(i); }
     for (int c = 0; c < after_forward_.size(); ++c) {
@@ -572,8 +582,19 @@ void Net<Dtype>::BackwardFromTo(int start, int end) {
       before_backward_[c]->run(i);
     }
     if (layer_need_backward_[i]) {
+      printf("@jungwk: [Backward] %s\n", layer_names_[i].c_str());
+      struct timespec t_start, t_end;
+      double t_time=0;
+      cudaDeviceSynchronize();
+      clock_gettime(CLOCK_REALTIME, &t_start);
+
       layers_[i]->Backward(
           top_vecs_[i], bottom_need_backward_[i], bottom_vecs_[i]);
+      cudaDeviceSynchronize();
+      clock_gettime(CLOCK_REALTIME, &t_end);
+      t_time = (((double)t_end.tv_sec - (double)t_start.tv_sec)
+          + ((double)t_end.tv_nsec - (double)t_start.tv_nsec)/1000000000);
+      printf("exec time %.6f\n", t_time);
       if (debug_info_) { BackwardDebugInfo(i); }
     }
     for (int c = 0; c < after_backward_.size(); ++c) {

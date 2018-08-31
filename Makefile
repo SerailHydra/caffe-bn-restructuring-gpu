@@ -39,7 +39,7 @@ DYNAMIC_NAME_SHORT := lib$(LIBRARY_NAME).so
 #DYNAMIC_SONAME_SHORT := $(DYNAMIC_NAME_SHORT).$(DYNAMIC_VERSION_MAJOR)
 DYNAMIC_VERSIONED_NAME_SHORT := $(DYNAMIC_NAME_SHORT).$(DYNAMIC_VERSION_MAJOR).$(DYNAMIC_VERSION_MINOR).$(DYNAMIC_VERSION_REVISION)
 DYNAMIC_NAME := $(LIB_BUILD_DIR)/$(DYNAMIC_VERSIONED_NAME_SHORT)
-COMMON_FLAGS += -DCAFFE_VERSION=$(DYNAMIC_VERSION_MAJOR).$(DYNAMIC_VERSION_MINOR).$(DYNAMIC_VERSION_REVISION)
+COMMON_FLAGS += -DCAFFE_VERSION=$(DYNAMIC_VERSION_MAJOR).$(DYNAMIC_VERSION_MINOR).$(DYNAMIC_VERSION_REVISION) -std=c++11
 
 ##############################
 # Get all source files
@@ -57,7 +57,7 @@ GTEST_SRC := src/gtest/gtest-all.cpp
 # TOOL_SRCS are the source files for the tool binaries
 TOOL_SRCS := $(shell find tools -name "*.cpp")
 # EXAMPLE_SRCS are the source files for the example binaries
-EXAMPLE_SRCS := $(shell find examples -name "*.cpp")
+EXAMPLE_SRCS := # $(shell find examples -name "*.cpp")
 # BUILD_INCLUDE_DIR contains any generated header files we want to include.
 BUILD_INCLUDE_DIR := $(BUILD_DIR)/src
 # PROTO_SRCS are the protocol buffer definitions
@@ -317,7 +317,7 @@ endif
 # Debugging
 ifeq ($(DEBUG), 1)
 	COMMON_FLAGS += -DDEBUG -g -O0
-	NVCCFLAGS += -G
+	NVCCFLAGS += -G -Xcompiler -rdynamic
 else
 	COMMON_FLAGS += -DNDEBUG -O2
 endif
@@ -402,7 +402,7 @@ else
 	endif
 endif
 INCLUDE_DIRS += $(BLAS_INCLUDE)
-LIBRARY_DIRS += $(BLAS_LIB)
+LIBRARY_DIRS += $(BLAS_LIB) $(CUDA_LIB)
 
 LIBRARY_DIRS += $(LIB_BUILD_DIR)
 

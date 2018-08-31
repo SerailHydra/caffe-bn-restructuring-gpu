@@ -2,11 +2,35 @@
 #include <thrust/device_vector.h>
 #include <thrust/functional.h>  // thrust::plus
 #include <thrust/reduce.h>
-
+#include "caffe/common.hpp"
+#include <iostream>
 #include <cmath>
 
+#include "cutlass/gemm/gemm.h"
+#include "cutlass/gemm/sgemm_traits.h"
+#include <vector>
 #include "caffe/common.hpp"
 #include "caffe/util/math_functions.hpp"
+
+typedef cutlass::gemm::Gemm<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kColumnMajor,
+  cutlass::MatrixLayout::kColumnMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_nn;
+
+typedef cutlass::gemm::Gemm<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kRowMajor,
+  cutlass::MatrixLayout::kColumnMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_tn;
+
+typedef cutlass::gemm::Gemm<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kColumnMajor,
+  cutlass::MatrixLayout::kRowMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_nt;
+
+typedef cutlass::gemm::Gemm<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kRowMajor,
+  cutlass::MatrixLayout::kRowMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_tt;
 
 namespace caffe {
 
@@ -18,12 +42,31 @@ void caffe_gpu_gemm<float>(const CBLAS_TRANSPOSE TransA,
   // Note that cublas follows fortran order.
   int lda = (TransA == CblasNoTrans) ? K : M;
   int ldb = (TransB == CblasNoTrans) ? N : K;
-  cublasOperation_t cuTransA =
-      (TransA == CblasNoTrans) ? CUBLAS_OP_N : CUBLAS_OP_T;
-  cublasOperation_t cuTransB =
-      (TransB == CblasNoTrans) ? CUBLAS_OP_N : CUBLAS_OP_T;
-  CUBLAS_CHECK(cublasSgemm(Caffe::cublas_handle(), cuTransB, cuTransA,
-      N, M, K, &alpha, B, ldb, A, lda, &beta, C, N));
+  int ldc = N;
+  if (TransB == CblasNoTrans) {
+    if (TransA == CblasNoTrans) {
+      Gemm_nn::Params params;
+      params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc);
+      Gemm_nn::launch(params);
+    }
+    else {
+      Gemm_nt::Params params;
+      params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc);
+      Gemm_nt::launch(params);
+    }
+  }
+  else if (TransB != CblasNoTrans) {
+    if (TransA == CblasNoTrans) {
+      Gemm_tn::Params params;
+      params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc);
+      Gemm_tn::launch(params);
+    }
+    else {
+      Gemm_tt::Params params;
+      params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc);
+      Gemm_tt::launch(params);
+    }
+  }
 }
 
 template <>

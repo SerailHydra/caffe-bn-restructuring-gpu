@@ -65,16 +65,6 @@ void WindowDataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
   cache_images_ = this->layer_param_.window_data_param().cache_images();
   string root_folder = this->layer_param_.window_data_param().root_folder();
 
-  const bool prefetch_needs_rand =
-      this->transform_param_.mirror() ||
-      this->transform_param_.crop_size();
-  if (prefetch_needs_rand) {
-    const unsigned int prefetch_rng_seed = caffe_rng_rand();
-    prefetch_rng_.reset(new Caffe::RNG(prefetch_rng_seed));
-  } else {
-    prefetch_rng_.reset();
-  }
-
   std::ifstream infile(this->layer_param_.window_data_param().source().c_str());
   CHECK(infile.good()) << "Failed to open window file "
       << this->layer_param_.window_data_param().source() << std::endl;

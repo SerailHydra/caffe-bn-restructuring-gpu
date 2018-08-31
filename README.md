@@ -1,3 +1,6 @@
+We modified Caffe implementation to support BN Fission-n-Fusion using [DenseNet models](https://github.com/shicai/DenseNet-Caffe) on NVIDIA GPU.
+Also check out [Implementation on CPU](https://github.com/scale-snu/caffe-bn-restructuring).
+
 # Caffe
 
 [![Build Status](https://travis-ci.org/BVLC/caffe.svg?branch=master)](https://travis-ci.org/BVLC/caffe)
