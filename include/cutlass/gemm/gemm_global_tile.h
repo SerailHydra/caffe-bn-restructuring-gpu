@@ -239,9 +239,10 @@ struct GemmGlobalIteratorAb
       }
 
       Base::Params::initialize(ptr, 0, stride_h, 1, inc_d, inc_h, 0, inc_advance);
+      relu_ptr_ = desc.relu_ptr;
       return 0;
     }
-
+    Scalar* relu_ptr_;
     // The extra offset to control moving to the residue.
     Index move_to_residue_offset;
   };
@@ -270,6 +271,7 @@ struct GemmGlobalIteratorAb
 
     // Setup the pointer.
     params.pointer += (block_h * params.stride_h + block_w);
+    params.relu_ptr_ += (block_h * params.stride_h + block_w);
 
     // Initialize predicates
     initialize_predicates(bounds, make_Coord(0, block_h, block_w));
@@ -282,12 +284,24 @@ struct GemmGlobalIteratorAb
     Load<Scalar, TileTraits_::kAccessSize, MemorySpace::kGlobal>::load(value, params.pointer, imm);
   }
 
+  CUTLASS_DEVICE void set_relu(typename Base::AccessType& value, int d, int h, int w, int c) const {
+    int const imm =
+        ComputeOffsetFromStrides<typename Base::ImmediateOffsetStrides>::get(0, 0, w, c);
+    params.relu_ptr_[imm] = value;
+  }
+
+
+
   /// Increment the pointer in the H dimension.
   CUTLASS_DEVICE void inc_h() { params.pointer += params.inc_h; }
+  CUTLASS_DEVICE void inc_relu_h() { params.relu_ptr_ += params.inc_h; }
+  CUTLASS_DEVICE void inc_relu_w() { params.relu_ptr_ += params.inc_w; }
   /// Increment the pointer in the D dimension.
   CUTLASS_DEVICE void inc_d() { params.pointer += params.inc_d; }
+  CUTLASS_DEVICE void inc_relu_d() { params.relu_ptr_ += params.inc_d; }
   /// Increment the pointer to move to the next iteration.
   CUTLASS_DEVICE void inc_advance() { params.pointer += params.inc_advance; }
+  CUTLASS_DEVICE void inc_relu_advance() { params.relu_ptr_ += params.inc_advance; }
 
   /// Initialize the predicates.
   CUTLASS_DEVICE void initialize_predicates(const Coord<3>& bounds, const Coord<3>& block) {
@@ -327,10 +341,12 @@ struct GemmGlobalIteratorAb
   CUTLASS_DEVICE void move_to_residue(Index k) {
     // Store the pointer and the predicates.
     stored_pointer = params.pointer;
+    stored_relu_pointer = params.relu_ptr_;
     stored_predicates = predicates;
 
     // Move the pointer to the residue.
     params.pointer += params.move_to_residue_offset;
+    params.relu_ptr_ += params.move_to_residue_offset;
 
     // The dimensions of the tile.
     int const kH = TileTraits_::Tile::kH;
@@ -378,6 +394,7 @@ struct GemmGlobalIteratorAb
   /// Rollback to beginning of first tile and initialize predicates.
   CUTLASS_DEVICE void rollback() {
     params.pointer = stored_pointer;
+    params.relu_ptr_ = stored_relu_pointer;
     predicates = stored_predicates;
   }
 
@@ -393,6 +410,7 @@ struct GemmGlobalIteratorAb
   Params params;
   /// The pointer.
   typename Base::Scalar const* stored_pointer;
+  typename Base::Scalar const* stored_relu_pointer;
   /// The predicates.
   PredicateVector predicates, stored_predicates;
 };

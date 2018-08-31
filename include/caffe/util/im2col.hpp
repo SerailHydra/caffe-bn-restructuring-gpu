@@ -43,6 +43,21 @@ void im2col_gpu(const Dtype* data_im, const int channels,
     Dtype* data_col);
 
 template <typename Dtype>
+void im2col_gpu_relu(const Dtype* data_im, const int channels,
+    const int height, const int width, const int kernel_h, const int kernel_w,
+    const int pad_h, const int pad_w, const int stride_h,
+    const int stride_w, const int dilation_h, const int dilation_w,
+    Dtype* data_col);
+
+template <typename Dtype>
+void im2col_gpu_norm(const Dtype* data_im, const int channels,
+    const int height, const int width, const int kernel_h, const int kernel_w,
+    const int pad_h, const int pad_w, const int stride_h,
+    const int stride_w, const int dilation_h, const int dilation_w,
+    Dtype* data_col,
+    const Dtype* mean_, const Dtype* var_, const Dtype* gamma_, const Dtype* beta_, Dtype* relu_);
+
+template <typename Dtype>
 void col2im_nd_gpu(const Dtype* data_col, const int num_spatial_axes,
     const int im_size, const int* im_shape, const int* col_shape,
     const int* kernel_shape, const int* pad, const int* stride,
@@ -54,6 +69,13 @@ void col2im_gpu(const Dtype* data_col, const int channels,
     const int pad_h, const int pad_w, const int stride_h,
     const int stride_w, const int dilation_h, const int dilation_w,
     Dtype* data_im);
+
+template <typename Dtype>
+void col2im_gpu_gather(const Dtype* data_col, const int channels,
+    const int height, const int width, const int kernel_h, const int kernel_w,
+    const int pad_h, const int pad_w, const int stride_h,
+    const int stride_w, const int dilation_h, const int dilation_w,
+    Dtype* data_im, const Dtype* mean_gpu, const Dtype* var, const Dtype* x_relu, const Dtype* x_bn, Dtype* d_gamma, Dtype* d_beta);
 
 }  // namespace caffe
 

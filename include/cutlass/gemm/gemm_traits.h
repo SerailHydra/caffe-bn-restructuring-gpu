@@ -561,7 +561,7 @@ struct GemmTraits {
 
     /// Initialize the parameters.
     template <typename GemmDesc_>
-    CUTLASS_HOST_DEVICE int initialize(GemmDesc_ const& desc) {
+    CUTLASS_HOST_DEVICE int initialize(GemmDesc_ const& desc, bool gather_flag = false) {
       // Set the problem size.
       this->m = desc.m;
       this->n = desc.n;
@@ -584,7 +584,7 @@ struct GemmTraits {
       }
 
       // The epilogue.
-      return epilogue.initialize(desc);
+      return epilogue.initialize(desc, gather_flag);
     }
   };
 
@@ -633,6 +633,24 @@ struct GemmTraits {
     /// Trigger the copies from shared memory to registers.
     CUTLASS_DEVICE void copy() {
       stream_a.copy();
+      stream_b.copy();
+    }
+
+    // copy and do norm
+    CUTLASS_DEVICE void copy_norm(int& c_idx, SharedNormParams& s) {
+      stream_a.copy_norm(c_idx, s);
+      stream_b.copy();
+    }
+
+    // copy and do norm
+    CUTLASS_DEVICE void copy_norm_global(int& c_idx, GlobalNormParams& s) {
+      stream_a.copy_norm(c_idx, s);
+      stream_b.copy();
+    }
+
+    // copy and do norm
+    CUTLASS_DEVICE void copy_relu() {
+      stream_a.copy_relu();
       stream_b.copy();
     }
 

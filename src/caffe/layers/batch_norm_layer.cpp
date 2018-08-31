@@ -6,9 +6,16 @@
 
 namespace caffe {
 
+void* bn_mean_temp;
+void* bn_var_temp;
+
 template <typename Dtype>
 void BatchNormLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top) {
+  skip_layer_ = strstr(this->layer_param_.name().c_str(), "x2") != NULL? true : false;
+  skip_norm_ = strstr(this->layer_param_.name().c_str(), "x1") != NULL
+    || (strstr(this->layer_param_.name().c_str(), "blk") != NULL && strstr(this->layer_param_.name().c_str(), "5") == NULL)
+    ? true : false;
   BatchNormParameter param = this->layer_param_.batch_norm_param();
   moving_average_fraction_ = param.moving_average_fraction();
   use_global_stats_ = this->phase_ == TEST;
@@ -80,6 +87,10 @@ void BatchNormLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     num_by_chans_.Reshape(sz);
     caffe_set(batch_sum_multiplier_.count(), Dtype(1),
         batch_sum_multiplier_.mutable_cpu_data());
+  }
+  if (skip_norm_) {
+    bn_mean_temp = static_cast<void *>(mean_.mutable_gpu_data());
+    bn_var_temp = static_cast<void *>(variance_.mutable_gpu_data());
   }
 }
 

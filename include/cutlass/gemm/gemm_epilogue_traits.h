@@ -122,21 +122,28 @@ struct GemmEpilogueTraits {
     typename SharedLoadIteratorD::Params shared_load_iterator_d;
     /// The functor params.
     typename Functor::Params functor;
+    float *d_x;
+    float *d_x_square;
+    bool gather_flag;
 
     /// Setup the params.
     template <typename GemmDesc_>
-    CUTLASS_HOST_DEVICE int initialize(GemmDesc_ const& desc) {
+    CUTLASS_HOST_DEVICE int initialize(GemmDesc_ const& desc, bool gather_flag_ = false) {
       // The parameters for the functor.
       int error_code = functor.initialize(desc);
       if (error_code) {
         return error_code;
       }
-
       // At the end of the H iteration, we jump over a number of columns.
       this->stride_h = desc.ldd * Delta::kH;
       // Nothing to do here.
       this->stride_w = 0;
 
+      this->gather_flag = gather_flag_;
+      if (gather_flag_) {
+        this->d_x = static_cast<float *> (desc.d_x);
+        this->d_x_square = static_cast<float *> (desc.d_x_square);
+      }
       // Setup the params for the global memory iterator for C.
       error_code = iterator_c.initialize(
           reinterpret_cast<ScalarC const*>(desc.d_c), desc.ldc, desc.n, stride_w, Delta::kW);

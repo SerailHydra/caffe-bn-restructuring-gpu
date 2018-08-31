@@ -36,6 +36,8 @@
 namespace cutlass {
 namespace gemm {
 
+struct SharedNormParams;
+struct GlobalNormParams;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <
@@ -120,12 +122,29 @@ struct GlobalLoadStreamBase {
   }
 
   /// Load the data from shared memory to the fetch fragment.
-  CUTLASS_DEVICE void copy() { iterator_load(load_iterator, fetched_fragment); }
+  CUTLASS_DEVICE void copy() {
+    iterator_load(load_iterator, fetched_fragment);
+  }
+
+  /// Load the data from shared memory to the fetch fragment.
+  CUTLASS_DEVICE void copy_norm(int& c_idx, SharedNormParams& s) {
+    iterator_load_norm(load_iterator, fetched_fragment, s, c_idx);
+  }
+
+  CUTLASS_DEVICE void copy_norm(int& c_idx, GlobalNormParams& s) {
+    iterator_load_norm(load_iterator, fetched_fragment, s, c_idx, (threadIdx.x / 32) % gridDim.y == blockIdx.y);
+  }
+
+  CUTLASS_DEVICE void copy_relu() {
+    iterator_load_relu(load_iterator, fetched_fragment);
+  }
+
+
 
   /// Commit the data.
   CUTLASS_DEVICE void commit() {
-    //transformer.transform(fetched_fragment, transformed_fragment);
-    iterator_store(store_iterator, fetched_fragment);
+    transformer.transform(fetched_fragment, transformed_fragment);
+    iterator_store(store_iterator, transformed_fragment);
     store_iterator.inc_stage();
   }
 

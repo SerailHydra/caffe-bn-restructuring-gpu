@@ -79,6 +79,9 @@ template <typename Dtype>
 void caffe_rng_uniform(const int n, const Dtype a, const Dtype b, Dtype* r);
 
 template <typename Dtype>
+void ReLU_inplace(const int n, Dtype* x);
+
+template <typename Dtype>
 void caffe_rng_gaussian(const int n, const Dtype mu, const Dtype sigma,
                         Dtype* r);
 
@@ -157,6 +160,35 @@ void caffe_gpu_gemm(const CBLAS_TRANSPOSE TransA,
     Dtype* C);
 
 template <typename Dtype>
+void caffe_gpu_gemm_relu(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const Dtype alpha, const Dtype* A, const Dtype* B, const Dtype beta,
+    Dtype* C);
+
+// Do row-reduction at the end of the GEMM
+template <typename Dtype>
+void caffe_gpu_gemm_mean_var_fusion(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const Dtype alpha, const Dtype* A, const Dtype* B, const Dtype beta,
+    Dtype* C, Dtype* x_temp, Dtype* x2_temp);
+
+template <typename Dtype>
+void caffe_gpu_gemm_mean_var_norm_fusion(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const Dtype alpha, const Dtype* A, const Dtype* B, const Dtype beta,
+    Dtype* C, Dtype* x_temp, Dtype* x2_temp, const Dtype* mean, const Dtype* var, const Dtype* gamma, const Dtype* beta_norm, Dtype* relu_ptr);
+
+template <typename Dtype>
+void caffe_gpu_gemm_norm(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const Dtype alpha, const Dtype* A, const Dtype* B, const Dtype beta,
+    Dtype* C,
+    const Dtype* mean, const Dtype* var, const Dtype* gamma, const Dtype* beta_norm, Dtype* relu_ptr);
+
+template <typename Dtype>
+void norm_and_save_relu(const int ch, const int spatial, Dtype* input, const Dtype* mean, const Dtype* var, const Dtype *gamma, const Dtype *beta, Dtype* relu_inp, Dtype* dst = NULL);
+
+template <typename Dtype>
 void caffe_gpu_gemv(const CBLAS_TRANSPOSE TransA, const int M, const int N,
     const Dtype alpha, const Dtype* A, const Dtype* x, const Dtype beta,
     Dtype* y);
@@ -195,6 +227,15 @@ void caffe_gpu_scal(const int N, const Dtype alpha, Dtype* X, cudaStream_t str);
 
 template <typename Dtype>
 void caffe_gpu_add(const int N, const Dtype* a, const Dtype* b, Dtype* y);
+
+template <typename Dtype>
+void caffe_gpu_compute_ABC(const int ch, const int N, const Dtype* gamma, const Dtype* var, const Dtype* d_gamma, const Dtype* d_beta, const Dtype* mean, Dtype* A, Dtype* B, Dtype* C);
+
+template <typename Dtype>
+void caffe_gpu_top_diff_transform(const int ch, const int spatial, const Dtype* A, const Dtype* B, const Dtype* C, Dtype* top_diff, const Dtype* top_data);
+
+template <typename Dtype>
+void caffe_gpu_relu_gather(const int ch, const int spatial, const Dtype* x_relu, const Dtype* x_bn, const Dtype* input, Dtype* d_gamma, Dtype* d_beta, const Dtype* mean, const Dtype* var);
 
 template <typename Dtype>
 void caffe_gpu_sub(const int N, const Dtype* a, const Dtype* b, Dtype* y);

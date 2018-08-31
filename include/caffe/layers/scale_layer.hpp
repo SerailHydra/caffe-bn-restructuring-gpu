@@ -71,6 +71,7 @@ class ScaleLayer: public Layer<Dtype> {
   vector<Blob<Dtype>*> bias_bottom_vec_;
   vector<bool> bias_propagate_down_;
   int bias_param_id_;
+  bool skip_layer_;
 
   Blob<Dtype> sum_multiplier_;
   Blob<Dtype> sum_result_;

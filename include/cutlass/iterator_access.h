@@ -31,8 +31,23 @@
 #include <cutlass/load_store.h>
 #include <cutlass/predicate_vector.h>
 #include <cutlass/shape.h>
-
+#include <cutlass/gemm/gemm.h>
 namespace cutlass {
+
+struct GlobalNormParams{
+  float* mean;
+  float* var;
+  float* gamma;
+  float* beta_norm;
+};
+
+struct SharedNormParams {
+  // 256 == block size
+  float mean[256];
+  float var[256];
+  float gamma[256];
+  float beta_norm[256];
+};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -66,6 +81,120 @@ CUTLASS_HOST_DEVICE void iterator_load(InputIterator &iterator, Fragment &fragme
     }
   }
   iterator.inc_advance();
+}
+
+
+template <typename InputIterator, typename Fragment>
+CUTLASS_HOST_DEVICE void iterator_load_relu(InputIterator &iterator, Fragment &fragment) {
+  typename InputIterator::FragmentIterator frag_iterator(fragment);
+  for (int d = 0; d < InputIterator::Iterations::kD; ++d) {
+    for (int h = 0; h < InputIterator::Iterations::kH; ++h) {
+      for (int w = 0; w < InputIterator::Iterations::kW; ++w) {
+        for (int c = 0; c < InputIterator::Iterations::kC; ++c) {
+          if (iterator.valid(d, h, w, c)) {
+            iterator.get(reinterpret_cast<typename InputIterator::AccessType &>(
+                             frag_iterator.at(d, h, w, c)),
+                         d,
+                         h,
+                         w,
+                         c);
+            if (frag_iterator.at(d, h, w, c) < 0) {
+              frag_iterator.at(d, h, w, c) = 0;
+            }
+          }
+        }
+        if (w < InputIterator::Iterations::kW - 1) {
+          iterator.inc_w();
+        }
+      }
+      if (h < InputIterator::Iterations::kH - 1) {
+        iterator.inc_h();
+      }
+    }
+    if (d < InputIterator::Iterations::kD - 1) {
+      iterator.inc_d();
+    }
+  }
+  iterator.inc_advance();
+}
+
+template <typename InputIterator, typename Fragment, typename GlobalNormParams>
+CUTLASS_HOST_DEVICE void iterator_load_norm(InputIterator &iterator, Fragment &fragment, GlobalNormParams& s_params, int& c_idx, bool is_relu_store) {
+  typename InputIterator::FragmentIterator frag_iterator(fragment);
+  for (int d = 0; d < InputIterator::Iterations::kD; ++d) {
+    for (int h = 0; h < InputIterator::Iterations::kH; ++h) {
+      for (int w = 0; w < InputIterator::Iterations::kW; ++w) {
+        for (int c = 0; c < InputIterator::Iterations::kC; ++c) {
+          if (iterator.valid(d, h, w, c)) {
+            iterator.get(reinterpret_cast<typename InputIterator::AccessType &>(
+                             frag_iterator.at(d, h, w, c)),
+                         d,
+                         h,
+                         w,
+                         c);
+            //float temp = s_params.gamma[c_idx % 256] * (frag_iterator.at(d, h, w, c) - s_params.mean[c_idx % 256]) / s_params.var[c_idx % 256] + s_params.beta_norm[c_idx % 256];
+            float temp = s_params.gamma[c_idx] * (frag_iterator.at(d, h, w, c)) + s_params.beta_norm[c_idx];
+            if (is_relu_store)
+              iterator.set_relu(reinterpret_cast<typename InputIterator::AccessType &>(temp), d, h, w, c);
+            frag_iterator.at(d, h, w, c) = (temp > 0) ? temp : 0;
+          }
+        }
+        if (w < InputIterator::Iterations::kW - 1) {
+          iterator.inc_w();
+            if (is_relu_store)
+          iterator.inc_relu_w();
+        }
+      }
+      if (h < InputIterator::Iterations::kH - 1) {
+        iterator.inc_h();
+            if (is_relu_store)
+        iterator.inc_relu_h();
+      }
+    }
+    if (d < InputIterator::Iterations::kD - 1) {
+      iterator.inc_d();
+            if (is_relu_store)
+      iterator.inc_relu_d();
+    }
+  }
+  iterator.inc_advance();
+            if (is_relu_store)
+  iterator.inc_relu_advance();
+  c_idx += 8;
+}
+
+template <typename InputIterator, typename Fragment, typename SharedNormParams>
+CUTLASS_HOST_DEVICE void iterator_load_norm(InputIterator &iterator, Fragment &fragment, SharedNormParams& s_params, int& c_idx) {
+  typename InputIterator::FragmentIterator frag_iterator(fragment);
+  for (int d = 0; d < InputIterator::Iterations::kD; ++d) {
+    for (int h = 0; h < InputIterator::Iterations::kH; ++h) {
+      for (int w = 0; w < InputIterator::Iterations::kW; ++w) {
+        for (int c = 0; c < InputIterator::Iterations::kC; ++c) {
+          if (iterator.valid(d, h, w, c)) {
+            iterator.get(reinterpret_cast<typename InputIterator::AccessType &>(
+                             frag_iterator.at(d, h, w, c)),
+                         d,
+                         h,
+                         w,
+                         c);
+            float temp = s_params.gamma[c_idx % 256] * (frag_iterator.at(d, h, w, c)) + s_params.beta_norm[c_idx % 256];
+            frag_iterator.at(d, h, w, c) = (temp > 0) * temp;
+          }
+        }
+        if (w < InputIterator::Iterations::kW - 1) {
+          iterator.inc_w();
+        }
+      }
+      if (h < InputIterator::Iterations::kH - 1) {
+        iterator.inc_h();
+      }
+    }
+    if (d < InputIterator::Iterations::kD - 1) {
+      iterator.inc_d();
+    }
+  }
+  iterator.inc_advance();
+  c_idx += 8;
 }
 
 /// Loads a fragment from a shared memory input iterator
@@ -185,6 +314,38 @@ CUTLASS_HOST_DEVICE void iterator_load(InputIterator const &iterator,
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+
+template <typename OutputIterator, typename Fragment>
+CUTLASS_HOST_DEVICE void iterator_store_w(OutputIterator &iterator, Fragment &fragment, float* local_x, float* local_x_square) {
+  typename OutputIterator::FragmentIterator frag_iterator(fragment);
+  for (int d = 0; d < OutputIterator::Iterations::kD; ++d) {
+    for (int h = 0; h < OutputIterator::Iterations::kH; ++h) {
+      for (int w = 0; w < OutputIterator::Iterations::kW; ++w) {
+        if (iterator.valid(d, h, w, 0)) {
+          iterator.set(reinterpret_cast<typename OutputIterator::AccessType const &>(
+                           frag_iterator.at(d, h, w, 0)),
+                       d,
+                       h,
+                       w,
+                       0);
+          local_x[h] += frag_iterator.at(d, h, w, 0);
+          local_x_square[h] += frag_iterator.at(d, h, w, 0) * frag_iterator.at(d, h, w, 0);
+        }
+        if (w < OutputIterator::Iterations::kW - 1) {
+          iterator.inc_w();
+        }
+      }
+      if (h < OutputIterator::Iterations::kH - 1) {
+        iterator.inc_h();
+      }
+    }
+    if (d < OutputIterator::Iterations::kD - 1) {
+      iterator.inc_d();
+    }
+  }
+  iterator.inc_advance();
+}
+
 
 /// Stores a fragment to an output iterator
 template <typename OutputIterator, typename Fragment>

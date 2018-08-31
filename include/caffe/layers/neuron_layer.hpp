@@ -25,6 +25,8 @@ class NeuronLayer : public Layer<Dtype> {
 
   virtual inline int ExactNumBottomBlobs() const { return 1; }
   virtual inline int ExactNumTopBlobs() const { return 1; }
+ protected:
+  bool skip_layer_;
 };
 
 }  // namespace caffe

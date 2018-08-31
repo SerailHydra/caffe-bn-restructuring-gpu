@@ -32,7 +32,191 @@ cutlass::MatrixLayout::kRowMajor,
   cutlass::MatrixLayout::kRowMajor,
   cutlass::Shape<8, 128, 128>>> Gemm_tt;
 
+// norm fusion
+typedef cutlass::gemm::Gemm_norm<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kColumnMajor,
+  cutlass::MatrixLayout::kColumnMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_nn_norm;
+
+// mean-var fusion
+typedef cutlass::gemm::Gemm_gather2<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kColumnMajor,
+  cutlass::MatrixLayout::kColumnMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_nn_gather;
+
+// mean-var-norm fusion
+typedef cutlass::gemm::Gemm_gather_norm<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kColumnMajor,
+  cutlass::MatrixLayout::kColumnMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_nn_gather_norm;
+
+typedef cutlass::gemm::Gemm_relu<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kRowMajor,
+  cutlass::MatrixLayout::kColumnMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_tn_relu;
+
+typedef cutlass::gemm::Gemm_relu<cutlass::gemm::SgemmTraits<
+cutlass::MatrixLayout::kColumnMajor,
+  cutlass::MatrixLayout::kRowMajor,
+  cutlass::Shape<8, 128, 128>>> Gemm_nt_relu;
+
 namespace caffe {
+
+// not implemented
+template <>
+void caffe_gpu_gemm_norm <double>(CBLAS_TRANSPOSE, CBLAS_TRANSPOSE, int, int, int, double, double const*, double const*, double, double*, double const*, double const*, double const*, double const*, double *){};
+template <>
+void caffe_gpu_gemm_mean_var_fusion <double>(CBLAS_TRANSPOSE, CBLAS_TRANSPOSE, int, int, int, double, double const*, double const*, double, double*, double*, double*){};
+template <>
+void caffe_gpu_gemm_relu<double>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const double alpha, const double* A, const double* B, const double beta,
+    double* C){};
+template <>
+void caffe_gpu_gemm_mean_var_norm_fusion <double>(CBLAS_TRANSPOSE, CBLAS_TRANSPOSE, int, int, int, double, double const*, double const*, double, double*, double*, double*, double const*, double const*, double const*, double const*, double *){};
+
+template <>
+void caffe_gpu_gemm_mean_var_fusion<float>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const float alpha, const float* A, const float* B, const float beta,
+    float* C, float* d_x_temp, float* d_x2_temp) {
+  // Note that cublas follows fortran order.
+  int lda = (TransA == CblasNoTrans) ? K : M;
+  int ldb = (TransB == CblasNoTrans) ? N : K;
+  int ldc = N;
+  if (TransB == CblasNoTrans && TransA == CblasNoTrans) {
+    Gemm_nn_gather::Params params;
+    params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc, d_x_temp, d_x2_temp);
+    Gemm_nn_gather::launch(params);
+  }
+  else {
+    LOG(FATAL) << "No mean-var fusion support for Transposed matrix";
+  }
+}
+
+template <>
+void caffe_gpu_gemm_mean_var_norm_fusion<float>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const float alpha, const float* A, const float* B, const float beta,
+    float* C, float* d_x_temp, float* d_x2_temp, const float* mean, const float* var, const float* gamma, const float* beta_norm, float* relu_ptr) {
+  // Note that cublas follows fortran order.
+  int lda = (TransA == CblasNoTrans) ? K : M;
+  int ldb = (TransB == CblasNoTrans) ? N : K;
+  int ldc = N;
+  if (TransB == CblasNoTrans && TransA == CblasNoTrans) {
+    Gemm_nn_gather_norm::Params params;
+    params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc, d_x_temp, d_x2_temp, const_cast<float *> (mean), const_cast<float *> (var), const_cast<float *> (gamma), const_cast<float *> (beta_norm), static_cast<float *>(relu_ptr));
+    Gemm_nn_gather_norm::launch(params);
+  }
+  else {
+    LOG(FATAL) << "No mean-var fusion support for Transposed matrix";
+  }
+}
+
+template <>
+void caffe_gpu_gemm_norm<float>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const float alpha, const float* A, const float* B, const float beta,
+    float* C,
+    const float* mean,
+    const float* var,
+    const float* gamma,
+    const float* beta_norm,
+    float* relu_ptr) {
+  // Note that cublas follows fortran order.
+  int lda = (TransA == CblasNoTrans) ? K : M;
+  int ldb = (TransB == CblasNoTrans) ? N : K;
+  int ldc = N;
+
+  if (TransB == CblasNoTrans && TransA == CblasNoTrans) {
+    Gemm_nn_norm::Params params;
+    params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc, const_cast<float *> (mean), const_cast<float *> (var), const_cast<float *> (gamma), const_cast<float *> (beta_norm), static_cast<float *> (relu_ptr));
+    Gemm_nn_norm::launch(params);
+   }
+  else {
+    LOG(FATAL) << "No norm fusion supoprt for Transposed matrix";
+  }
+}
+
+template <typename Dtype>
+__global__ void norm_save_relu_kernel(const int ch, const int spatial, Dtype* input, const Dtype* mean, const Dtype* var, const Dtype *gamma, const Dtype *beta, Dtype* relu_inp) {
+  CUDA_KERNEL_LOOP(index, ch * spatial) {
+    int channel_idx = index / spatial;
+    relu_inp[index] = gamma[channel_idx] * input[index]  + beta[channel_idx];
+    input[index] = relu_inp[index] > 0? relu_inp[index] : 0;
+  }
+}
+
+template <typename Dtype>
+__global__ void norm_save_relu_kernel(const int ch, const int spatial, Dtype* input, const Dtype* mean, const Dtype* var, const Dtype *gamma, const Dtype *beta, Dtype* relu_inp, Dtype* dst) {
+  CUDA_KERNEL_LOOP(index, ch * spatial) {
+    int channel_idx = index / spatial;
+    relu_inp[index] = gamma[channel_idx] * input[index]  + beta[channel_idx];
+    dst[index] = relu_inp[index] > 0? relu_inp[index] : 0;
+  }
+}
+
+template <>
+void norm_and_save_relu<float>(const int ch, const int spatial, float* input, const float* mean, const float* var, const float *gamma, const float *beta, float* relu_inp, float* dst)
+{
+  if (dst == NULL) {
+    norm_save_relu_kernel<float> <<< CAFFE_GET_BLOCKS(ch * spatial), CAFFE_CUDA_NUM_THREADS>>> (
+        ch, spatial, input, mean, var, gamma, beta, relu_inp);
+  }
+  else {
+  norm_save_relu_kernel<float> <<< CAFFE_GET_BLOCKS(ch * spatial), CAFFE_CUDA_NUM_THREADS>>> (
+      ch, spatial, input, mean, var, gamma, beta, relu_inp, dst);
+  }
+}
+
+template <>
+void norm_and_save_relu<double>(const int ch, const int spatial, double* input, const double* mean, const double* var, const double *gamma, const double *beta, double* relu_inp, double *dst)
+{
+}
+
+template <typename Dtype>
+__global__ void relu_ker(const int n, Dtype* y) {
+  CUDA_KERNEL_LOOP(index, n) {
+    if (y[index] < 0) {
+      y[index] = 0;
+    }
+  }
+}
+
+template <>
+void ReLU_inplace<float> (const int n, float* x) {
+  relu_ker<float><<<CAFFE_GET_BLOCKS(n), CAFFE_CUDA_NUM_THREADS>>>(
+      n, x);
+}
+
+template <>
+void ReLU_inplace<double> (const int n, double* x) {
+}
+
+template <>
+void caffe_gpu_gemm_relu<float>(const CBLAS_TRANSPOSE TransA,
+    const CBLAS_TRANSPOSE TransB, const int M, const int N, const int K,
+    const float alpha, const float* A, const float* B, const float beta,
+    float* C) {
+  // Note that cublas follows fortran order.
+  int lda = (TransA == CblasNoTrans) ? K : M;
+  int ldb = (TransB == CblasNoTrans) ? N : K;
+  int ldc = N;
+
+  if (TransA == CblasNoTrans && TransB == CblasTrans) {
+    Gemm_tn_relu::Params params;
+    params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc);
+    Gemm_tn_relu::launch(params);
+  }
+  else if (TransA == CblasTrans && TransB == CblasNoTrans) {
+    Gemm_nt_relu::Params params;
+    params.initialize(N, M, K, alpha, B, ldb, A, lda, beta, C, ldc, C, ldc);
+    Gemm_nt_relu::launch(params);
+  }
+  else {
+    LOG(FATAL) << "No support other than NT or TN type in 1x1 backward fusion";
+  }
+}
 
 template <>
 void caffe_gpu_gemm<float>(const CBLAS_TRANSPOSE TransA,
@@ -316,6 +500,65 @@ void caffe_gpu_mul<double>(const int N, const double* a,
   // NOLINT_NEXT_LINE(whitespace/operators)
   mul_kernel<double><<<CAFFE_GET_BLOCKS(N), CAFFE_CUDA_NUM_THREADS>>>(
       N, a, b, y);
+}
+
+template <typename Dtype>
+__global__ void relu_gather_kernel(const int ch, const int spatial, const Dtype* x_relu, const Dtype* x_bn, Dtype* input, Dtype* d_gamma, Dtype* d_beta, const Dtype* mean, const Dtype* var) {
+  // for every pixel of CHW
+  CUDA_KERNEL_LOOP(index, ch * spatial) {
+    int ch = index / spatial;
+    if (x_relu[index] > 0) {
+      d_beta[index] += input[index];
+      d_gamma[index] += input[index] * (x_bn[index] - mean[ch]) / var[ch];
+    }
+    else {
+      input[index] = 0;
+    }
+  }
+}
+
+template <>
+void caffe_gpu_relu_gather<float> (const int ch, const int spatial, const float* x_relu, const float* x_bn, const float* input, float* d_gamma, float* d_beta, const float* mean, const float* var) {
+  relu_gather_kernel<float> <<<CAFFE_GET_BLOCKS(ch * spatial), CAFFE_CUDA_NUM_THREADS>>> (ch, spatial, x_relu, x_bn, const_cast<float *> (input), d_gamma, d_beta, mean, var);
+}
+
+template <>
+void caffe_gpu_relu_gather<double> (const int ch, const int spatial, const double* x_relu, const double* x_bn, const double* input, double* d_gamma, double* d_beta, const double* mean, const double*var) {
+}
+
+template <typename Dtype>
+__global__ void ABC_kernel(const int ch, const int N, const Dtype* gamma, const Dtype* var, const Dtype* d_gamma, const Dtype* d_beta, const Dtype* mean, Dtype* A, Dtype* B, Dtype* C) {
+  CUDA_KERNEL_LOOP(index, ch) {
+    A[index] = gamma[index] / var[index];
+    B[index] = - gamma[index] * d_gamma[index] / (N * var[index] * var[index]);
+    C[index] = gamma[index] / (N * var[index]) * (mean[index] * d_gamma[index] / var[index] - d_beta[index]);
+  }
+}
+
+template <>
+void caffe_gpu_compute_ABC<float>(const int ch, const int N, const float* gamma, const float* var, const float* d_gamma, const float* d_beta, const float* mean, float* A, float* B, float* C) {
+  ABC_kernel<float> <<<CAFFE_GET_BLOCKS(ch), CAFFE_CUDA_NUM_THREADS>>> (
+      ch, N, gamma, var, d_gamma, d_beta, mean, A, B, C);
+}
+
+template <>
+void caffe_gpu_compute_ABC<double>(const int ch, const int N, const double* gamma, const double* var, const double* d_gamma, const double* d_beta, const double* mean, double* A, double* B, double* C) {}
+
+template <typename Dtype>
+__global__ void transform_kernel(const int ch, const int spatial, const Dtype* A, const Dtype* B, const Dtype* C, Dtype* top_diff, const Dtype* top_data) {
+  CUDA_KERNEL_LOOP(index, ch * spatial) {
+    int ch = index / spatial;
+    top_diff[index] = A[ch] * top_diff[index] + B[ch] * top_data[index] + C[ch];
+  }
+}
+
+template <>
+void caffe_gpu_top_diff_transform<float>(const int ch, const int spatial, const float* A, const float* B, const float* C, float* top_diff, const float* top_data) {
+  transform_kernel<float> <<<CAFFE_GET_BLOCKS(ch * spatial), CAFFE_CUDA_NUM_THREADS>>> (ch, spatial, A, B, C, top_diff, top_data);
+}
+
+template <>
+void caffe_gpu_top_diff_transform<double>(const int ch, const int spatial, const double* A, const double* B, const double* C, double* top_diff, const double* top_data) {
 }
 
 template <typename Dtype>

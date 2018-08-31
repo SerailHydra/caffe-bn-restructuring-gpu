@@ -1,16 +1,46 @@
 #include <algorithm>
 #include <vector>
-
+#include <string>
 #include "caffe/filler.hpp"
 #include "caffe/layers/base_conv_layer.hpp"
 #include "caffe/util/im2col.hpp"
 #include "caffe/util/math_functions.hpp"
+#include "caffe/common.hpp"
 
 namespace caffe {
+// mean and var from x1bn to x1conv
+extern void* bn_mean_temp;
+extern void* bn_var_temp;
+// forwarding mean and var from x1conv to x2conv
+const void* temp_mean_blob;
+const void* temp_var_blob;
+bool is_allocated_global = false;
+void *d_beta_chw_extern;
+void *d_gamma_chw_extern;
+void *A_extern;
+void *B_extern;
+void *C_extern;
+void *forward_temp;
 
 template <typename Dtype>
 void BaseConvolutionLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       const vector<Blob<Dtype>*>& top) {
+  if (!is_allocated_global) {
+    cudaMalloc(&d_gamma_chw_extern, 831744 * sizeof(double));
+    cudaMalloc(&d_beta_chw_extern, 831744 * sizeof(Dtype));
+    cudaMalloc(&A_extern, 831744 * sizeof(Dtype));
+    cudaMalloc(&B_extern, 831744 * sizeof(Dtype));
+    cudaMalloc(&C_extern, 831744 * sizeof(Dtype));
+    cudaMalloc(&forward_temp, 831744 * sizeof(Dtype));
+
+    is_allocated_global = true;
+  }
+  d_gamma_chw = static_cast<Dtype*> (d_gamma_chw_extern);
+  d_beta_chw = static_cast<Dtype*> (d_beta_chw_extern);
+  A = static_cast<Dtype*> (A_extern);
+  B = static_cast<Dtype*> (B_extern);
+  C = static_cast<Dtype*> (C_extern);
+
   // Configure the kernel size, padding, stride, and inputs.
   ConvolutionParameter conv_param = this->layer_param_.convolution_param();
   force_nd_im2col_ = conv_param.force_nd_im2col();
@@ -179,6 +209,12 @@ void BaseConvolutionLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
   weight_offset_ = conv_out_channels_ * kernel_dim_ / group_;
   // Propagate gradients to the parameters (as directed by backward pass).
   this->param_propagate_down_.resize(this->blobs_.size(), true);
+  mean_var_fusion_ = (strstr(this->layer_param_.name().c_str(), "x1") != NULL) ? true : false;
+  norm_fusion_ = (strstr(this->layer_param_.name().c_str(), "x2") != NULL ||
+      strstr(this->layer_param_.name().c_str(), "x1") != NULL ||
+      (strstr(this->layer_param_.name().c_str(), "blk") != NULL && strstr(this->layer_param_.name().c_str(), "5") == NULL)
+      )? true : false;
+  is_blk_ = (strstr(this->layer_param_.name().c_str(), "blk") != NULL && strstr(this->layer_param_.name().c_str(), "5") == NULL)? true : false;
 }
 
 template <typename Dtype>
@@ -251,6 +287,97 @@ void BaseConvolutionLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     bias_multiplier_.Reshape(bias_multiplier_shape);
     caffe_set(bias_multiplier_.count(), Dtype(1),
         bias_multiplier_.mutable_cpu_data());
+  }
+  if (norm_fusion_) {
+    vector<int> relu;
+    relu.push_back(num_);
+    relu.push_back(conv_in_channels_);
+    relu.push_back(conv_input_shape_.cpu_data()[1]);
+    relu.push_back(conv_input_shape_.cpu_data()[2]);
+    relu_inp_.Reshape(relu);
+
+    vector<int> spatial_multiplier_shape(1, out_spatial_dim_);
+    spatial_multiplier_.Reshape(spatial_multiplier_shape);
+    caffe_set(spatial_multiplier_.count(), Dtype(1),
+        spatial_multiplier_.mutable_cpu_data());
+  }
+
+  // usually x1
+  if (norm_fusion_ && mean_var_fusion_) {
+    vector<int> ch;
+    ch.push_back(conv_in_channels_);
+    gamma_.Reshape(ch);
+    beta_.Reshape(ch);
+    mean_.Reshape(ch);
+    var_.Reshape(ch);
+
+    // vars to pass
+    vector<int> ch_o;
+    ch_o.push_back(conv_out_channels_);
+    mean_to_pass_.Reshape(ch_o);
+    var_to_pass_.Reshape(ch_o);
+
+    // temporal storages for reduction
+    vector<int> ch_bx_shape;
+    // bx * channels
+    ch_bx_shape.push_back((conv_out_spatial_dim_ + 127) / 128);
+    ch_bx_shape.push_back(conv_out_channels_);
+    // reshape the twos
+    x_accum_temp_.Reshape(ch_bx_shape);
+    x2_accum_temp_.Reshape(ch_bx_shape);
+
+    // init gamma
+    FillerParameter filler_param;
+    filler_param.set_type("constant");
+    filler_param.set_value(1);
+    shared_ptr<Filler<Dtype> > filler(GetFiller<Dtype>(filler_param));
+    filler->Fill(&this->gamma_);
+
+    FillerParameter bias_param;
+    bias_param.set_type("constant");
+    bias_param.set_value(0);
+    shared_ptr<Filler<Dtype> > filler_bias(GetFiller<Dtype>(bias_param));
+    filler_bias->Fill(&this->beta_);
+
+    temp_mean_blob = &(mean_to_pass_);
+    temp_var_blob = &(var_to_pass_);
+    // from bn
+    mean_.set_gpu_data(static_cast<Dtype *>(bn_mean_temp));
+    var_.set_gpu_data(static_cast<Dtype*>(bn_var_temp));
+  }
+
+  // x2 conv
+  else if (!mean_var_fusion_ && norm_fusion_) {
+    vector<int> ch;
+    ch.push_back(conv_in_channels_);
+    gamma_.Reshape(ch);
+    beta_.Reshape(ch);
+    mean_.Reshape(ch);
+    var_.Reshape(ch);
+
+    // init gamma
+    FillerParameter filler_param;
+    filler_param.set_type("constant");
+    filler_param.set_value(1);
+    shared_ptr<Filler<Dtype> > filler(GetFiller<Dtype>(filler_param));
+    filler->Fill(&this->gamma_);
+
+    // init beta
+    FillerParameter bias_param;
+    bias_param.set_type("constant");
+    bias_param.set_value(0);
+    shared_ptr<Filler<Dtype> > filler_bias(GetFiller<Dtype>(bias_param));
+    filler_bias->Fill(&this->beta_);
+
+    if (is_blk_) {
+      // from bn
+      mean_.set_gpu_data(static_cast<Dtype *>(bn_mean_temp));
+      var_.set_gpu_data(static_cast<Dtype*>(bn_var_temp));
+    }
+    else if (!is_blk_) {
+      mean_.ShareData(*(static_cast<const Blob<Dtype>* >(temp_mean_blob)));
+      var_.ShareData(*(static_cast<const Blob<Dtype>* >(temp_var_blob)));
+    }
   }
 }
 
@@ -342,6 +469,79 @@ void BaseConvolutionLayer<Dtype>::forward_gpu_gemm(const Dtype* input,
 }
 
 template <typename Dtype>
+void BaseConvolutionLayer<Dtype>::forward_gpu_gemm_mean_var_fusion(const Dtype* input,
+    const Dtype* weights, Dtype* output, bool skip_im2col) {
+  const Dtype* col_buff = input;
+  Dtype* x_accum_temp = x_accum_temp_.mutable_gpu_data();
+  Dtype* x2_accum_temp = x2_accum_temp_.mutable_gpu_data();;
+  if (!is_1x1_) {
+    if (!skip_im2col) {
+      conv_im2col_gpu(input, col_buffer_.mutable_gpu_data());
+    }
+    col_buff = col_buffer_.gpu_data();
+  }
+  for (int g = 0; g < group_; ++g) {
+    caffe_gpu_gemm_mean_var_fusion<Dtype>(CblasNoTrans, CblasNoTrans, conv_out_channels_ /
+        group_, conv_out_spatial_dim_, kernel_dim_,
+        (Dtype)1., weights + weight_offset_ * g, col_buff + col_offset_ * g,
+        (Dtype)0., output + output_offset_ * g, x_accum_temp, x2_accum_temp);
+  }
+}
+
+template <typename Dtype>
+void BaseConvolutionLayer<Dtype>::forward_gpu_gemm_mean_var_norm_fusion(const Dtype* input,
+    const Dtype* weights, Dtype* output, bool skip_im2col, int n) {
+  Dtype* col_buff = const_cast<Dtype*> (input);
+  Dtype* x_accum_temp = x_accum_temp_.mutable_gpu_data();
+  Dtype* x2_accum_temp = x2_accum_temp_.mutable_gpu_data();;
+  Dtype* temp_ = static_cast<Dtype*> (forward_temp);
+  if (!is_1x1_) {
+    LOG(FATAL) << "does not reach here";
+    if (!skip_im2col) {
+      // does not reach here
+      conv_im2col_gpu(input, col_buffer_.mutable_gpu_data());
+    }
+    col_buff = col_buffer_.mutable_gpu_data();
+  }
+  for (int g = 0; g < group_; ++g) {
+    norm_and_save_relu(kernel_dim_, conv_out_spatial_dim_, col_buff + col_offset_ * g, mean_.gpu_data(), var_.gpu_data(), gamma_.gpu_data(), beta_.gpu_data(), relu_inp_.mutable_gpu_data() + n * bottom_dim_, temp_);
+    caffe_gpu_gemm_mean_var_fusion<Dtype>(CblasNoTrans, CblasNoTrans, conv_out_channels_ /
+        group_, conv_out_spatial_dim_, kernel_dim_,
+        (Dtype)1., weights + weight_offset_ * g, temp_ + col_offset_ * g,
+        (Dtype)0., output + output_offset_ * g, x_accum_temp, x2_accum_temp);
+  }
+}
+
+
+template <typename Dtype>
+void BaseConvolutionLayer<Dtype>::forward_gpu_gemm_norm_fusion(const Dtype* input,
+    const Dtype* weights, Dtype* output, bool skip_im2col, int n) {
+  Dtype* col_buff = const_cast<Dtype*> (input);
+  Dtype* temp_ = static_cast<Dtype*> (forward_temp);
+  if (!is_1x1_) {
+    if (!skip_im2col) {
+      conv_im2col_gpu_norm(input, col_buffer_.mutable_gpu_data(), n);
+    }
+    col_buff = col_buffer_.mutable_gpu_data();
+  }
+  for (int g = 0; g < group_; ++g) {
+    if (!is_1x1_) {
+      caffe_gpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, conv_out_channels_ /
+          group_, conv_out_spatial_dim_, kernel_dim_,
+          (Dtype)1., weights + weight_offset_ * g, col_buff + col_offset_ * g,
+          (Dtype)0., output + output_offset_ * g);
+    }
+    else {
+      norm_and_save_relu(kernel_dim_, conv_out_spatial_dim_, col_buff + col_offset_ * g, mean_.gpu_data(), var_.gpu_data(), gamma_.gpu_data(), beta_.gpu_data(), relu_inp_.mutable_gpu_data() + n * bottom_dim_, temp_);
+      caffe_gpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, conv_out_channels_ /
+          group_, conv_out_spatial_dim_, kernel_dim_,
+          (Dtype)1., weights + weight_offset_ * g, temp_ + col_offset_ * g,
+          (Dtype)0., output + output_offset_ * g);
+    }
+  }
+}
+
+template <typename Dtype>
 void BaseConvolutionLayer<Dtype>::forward_gpu_bias(Dtype* output,
     const Dtype* bias) {
   caffe_gpu_gemm<Dtype>(CblasNoTrans, CblasNoTrans, num_output_,
@@ -368,6 +568,33 @@ void BaseConvolutionLayer<Dtype>::backward_gpu_gemm(const Dtype* output,
 }
 
 template <typename Dtype>
+void BaseConvolutionLayer<Dtype>::backward_gpu_gemm_gather(const Dtype* output,
+    const Dtype* weights, const Dtype* x_relu, const Dtype* x_bn, Dtype* input, int n) {
+  Dtype* col_buff = col_buffer_.mutable_gpu_data();
+  if (is_1x1_) {
+    col_buff = input;
+  }
+  for (int g = 0; g < group_; ++g) {
+    if (!is_1x1_) {
+      caffe_gpu_gemm<Dtype>(CblasTrans, CblasNoTrans, kernel_dim_,
+          conv_out_spatial_dim_, conv_out_channels_ / group_,
+          (Dtype)1., weights + weight_offset_ * g, output + output_offset_ * g,
+          (Dtype)0., col_buff + col_offset_ * g);
+    }
+    else { // 1x1 case
+      caffe_gpu_gemm<Dtype>(CblasTrans, CblasNoTrans, kernel_dim_,
+          conv_out_spatial_dim_, conv_out_channels_ / group_,
+          (Dtype)1., weights + weight_offset_ * g, output + output_offset_ * g,
+          (Dtype)0., col_buff + col_offset_ * g);
+      relu_and_gather(x_relu, x_bn, input, n);
+    }
+  }
+  if (!is_1x1_) {
+    conv_col2im_gpu_gather(col_buff, input, x_relu, x_bn);
+  }
+}
+
+template <typename Dtype>
 void BaseConvolutionLayer<Dtype>::weight_gpu_gemm(const Dtype* input,
     const Dtype* output, Dtype* weights) {
   const Dtype* col_buff = input;
@@ -383,11 +610,44 @@ void BaseConvolutionLayer<Dtype>::weight_gpu_gemm(const Dtype* input,
   }
 }
 
+
+template <typename Dtype>
+void BaseConvolutionLayer<Dtype>::weight_gpu_gemm_relu(const Dtype* input,
+    const Dtype* output, Dtype* weights) {
+  const Dtype* col_buff = input;
+  if (!is_1x1_) {
+    conv_im2col_gpu_relu(input, col_buffer_.mutable_gpu_data());
+    col_buff = col_buffer_.gpu_data();
+  }
+  for (int g = 0; g < group_; ++g) {
+    if (!is_1x1_) {
+      caffe_gpu_gemm<Dtype>(CblasNoTrans, CblasTrans, conv_out_channels_ / group_,
+          kernel_dim_, conv_out_spatial_dim_,
+          (Dtype)1., output + output_offset_ * g, col_buff + col_offset_ * g,
+          (Dtype)1., weights + weight_offset_ * g);
+    }
+    else {
+      ReLU_inplace(kernel_dim_ * conv_out_spatial_dim_, const_cast<Dtype*> (col_buff));
+      caffe_gpu_gemm<Dtype>(CblasNoTrans, CblasTrans, conv_out_channels_ / group_,
+          kernel_dim_, conv_out_spatial_dim_,
+          (Dtype)1., output + output_offset_ * g, col_buff + col_offset_ * g,
+          (Dtype)1., weights + weight_offset_ * g);
+    }
+  }
+}
+
 template <typename Dtype>
 void BaseConvolutionLayer<Dtype>::backward_gpu_bias(Dtype* bias,
     const Dtype* input) {
   caffe_gpu_gemv<Dtype>(CblasNoTrans, num_output_, out_spatial_dim_, 1.,
       input, bias_multiplier_.gpu_data(), 1., bias);
+}
+
+template <typename Dtype>
+void BaseConvolutionLayer<Dtype>::backward_gpu_reduction(Dtype* output,
+    const Dtype* input) {
+  caffe_gpu_gemv<Dtype>(CblasNoTrans, conv_in_channels_, conv_input_shape_.cpu_data()[1] * conv_input_shape_.cpu_data()[2], 1.,
+      input, spatial_multiplier_.gpu_data(), 0., output);
 }
 
 #endif  // !CPU_ONLY

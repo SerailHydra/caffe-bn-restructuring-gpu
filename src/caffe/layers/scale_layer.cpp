@@ -70,6 +70,10 @@ void ScaleLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
     bias_propagate_down_.resize(1, false);
   }
   this->param_propagate_down_.resize(this->blobs_.size(), true);
+  skip_layer_= (strstr(this->layer_param_.name().c_str(), "x2") != NULL
+      || strstr(this->layer_param_.name().c_str(), "x1") != NULL
+      || (strstr(this->layer_param_.name().c_str(), "blk") != NULL && strstr(this->layer_param_.name().c_str(), "5") == NULL))
+      ? true : false;
 }
 
 template <typename Dtype>
@@ -110,6 +114,10 @@ void ScaleLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   if (bias_layer_) {
     bias_bottom_vec_[0] = top[0];
     bias_layer_->Reshape(bias_bottom_vec_, top);
+  }
+  if (skip_layer_) {
+    top[0]->ShareData(*bottom[0]);
+    top[0]->ShareDiff(*bottom[0]);
   }
 }
 

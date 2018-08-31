@@ -1,5 +1,5 @@
 #include <vector>
-
+#include <string>
 #include "caffe/layers/conv_layer.hpp"
 
 namespace caffe {

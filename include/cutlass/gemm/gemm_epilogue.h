@@ -107,16 +107,23 @@ struct GemmEpilogue {
   /// Execute the epilogue.
   CUTLASS_DEVICE void epilogue(Coord<3> const& block, Accumulators& accumulators) {
     if (is_zero(params.functor.beta)) {
-      epilogue_with_or_without_beta<true>(block, accumulators);
+      // function overload in order to diverge branch (I'd like to do partial specialization for template function but that is not allowed)
+      if (params.gather_flag)
+        epilogue_with_or_without_beta<true>(block, accumulators, true);
+      else
+        epilogue_with_or_without_beta<true>(block, accumulators);
     } else {
-      epilogue_with_or_without_beta<false>(block, accumulators);
+      if (params.gather_flag)
+        epilogue_with_or_without_beta<false>(block, accumulators, true);
+      else
+        epilogue_with_or_without_beta<false>(block, accumulators);
     }
   }
 
+  // normal ver.
   template <bool kBetaIsZero_>
   CUTLASS_DEVICE void epilogue_with_or_without_beta(Coord<3> const& block,
                                                     Accumulators& accumulators) {
-
     // The problem size.
     Coord<3> const bounds = cutlass::make_Coord(0, n, m);
 
@@ -125,7 +132,7 @@ struct GemmEpilogue {
     // The C fragment.
     typename GlobalLoadIteratorC::Fragment fragment_c;
     // The transformed C fragment.
-    //typename GlobalTransformerC::OutputFragment transformed_c;
+    typename GlobalTransformerC::OutputFragment transformed_c;
 
     CUTLASS_PRAGMA_UNROLL
     for (int h = 0; h < Iterations::kH; ++h) {
@@ -196,21 +203,186 @@ struct GemmEpilogue {
           functor.evaluate(fetched_d, fragment_d);
         } else {
           // Transform C fragment.
-          //transformer_c.transform(fragment_c, transformed_c);
+          transformer_c.transform(fragment_c, transformed_c);
           // Do the math.
-          functor.evaluate(fetched_d, fragment_c, fragment_d);
+          functor.evaluate(fetched_d, transformed_c, fragment_d);
         }
 
         // Transform D fragment.
-        //typename GlobalTransformerD::OutputFragment transformed_d;
-        //transformer_d.transform(fragment_d, transformed_d);
-
-        // Copy the results to global memory.
-        iterator_store(global_store_iterator, fragment_d);
+        typename GlobalTransformerD::OutputFragment transformed_d;
+        transformer_d.transform(fragment_d, transformed_d);
+        iterator_store(global_store_iterator, transformed_d);
       }
     }
   }
 
+  template <bool kBetaIsZero_>
+  CUTLASS_DEVICE void epilogue_with_or_without_beta(Coord<3> const& block,
+                                                    Accumulators& accumulators,
+                                                    bool kMeanVarFusion_) {
+    // per-block reduced results
+    volatile __shared__ float shared_reduced_x[128];
+    volatile __shared__ float shared_reduced_x_square[128];
+    // per-thread results
+    volatile __shared__ float shared_x_1[256];
+    volatile __shared__ float shared_x_2[256];
+    volatile __shared__ float shared_x_squared_1[256];
+    volatile __shared__ float shared_x_squared_2[256];
+    int tid = threadIdx.x;
+
+    // The problem size.
+    Coord<3> const bounds = cutlass::make_Coord(0, n, m);
+
+    // The functor.
+    Functor functor(params.functor);
+    // The C fragment.
+    typename GlobalLoadIteratorC::Fragment fragment_c;
+    // The transformed C fragment.
+    typename GlobalTransformerC::OutputFragment transformed_c;
+
+    CUTLASS_PRAGMA_UNROLL
+    for (int h = 0; h < Iterations::kH; ++h) {
+      // Compute pointer and predicate offsets for C and D global iterators.
+      int const pointer_offset =
+          ((params.iterator_d.inc_h * (GlobalStoreIteratorD::Iterations::kH - 1) +
+            params.iterator_d.inc_advance) *
+               Iterations::kW +
+           params.stride_h) *
+          h;
+      int const predicate_offset =
+          ((params.iterator_d.predicate_inc_h * (GlobalStoreIteratorD::Iterations::kH - 1) +
+            params.iterator_d.predicate_inc_advance) *
+               Iterations::kW +
+           Traits::Delta::kH) *
+          h;
+
+      // The iterator to load the elements of the C matrix.
+      GlobalLoadIteratorC global_load_iterator(
+          params.iterator_c, bounds, block, pointer_offset, predicate_offset);
+      // The transformer for C.
+      GlobalTransformerC transformer_c;
+      // The transformer for D.
+      GlobalTransformerD transformer_d;
+      // The iterator to store into the D matrix.
+      GlobalStoreIteratorD global_store_iterator(
+          params.iterator_d, bounds, block, pointer_offset, predicate_offset);
+
+      // The transformer to transform before storing to shared memory.
+      SharedStoreTransformerD shared_store_transformer;
+      typename SharedStoreTransformerD::OutputFragment shared_store_transformed_d;
+
+      // The iterator to store to shared memory.
+      SharedStoreIteratorD shared_store_iterator(params.shared_store_iterator_d,
+                                                 shared_storage.shared_stream.store);
+
+      // The iterator to load from shared memory. TODO: Use a stream.
+      SharedLoadIteratorD shared_load_iterator(params.shared_load_iterator_d,
+                                               shared_storage.shared_stream.load);
+
+      CUTLASS_PRAGMA_UNROLL
+      for (int w = 0; w < Iterations::kW; ++w) {
+        // Load the C matrix into fragment.
+        if (!kBetaIsZero_) {
+          iterator_load(global_load_iterator, fragment_c);
+        }
+
+        // Make sure we can write to shared memory.
+        shared_load_fence();
+
+        // Copy the accumulators to shared memory.
+        int const offset = (h * Iterations::kW + w) * SharedStoreIteratorD::Fragment::kElements;
+
+        shared_store_transformer.transform(accumulators, offset, shared_store_transformed_d);
+        shared_iterator_store(shared_store_iterator, shared_store_transformed_d);
+
+        // Make sure the data is in shared memory.
+        shared_store_fence();
+
+        // Copy the accumulators back to registers from shared memory.
+        typename SharedLoadIteratorD::Fragment fetched_d;
+        shared_iterator_load(shared_load_iterator, fetched_d);
+
+        // Do the math.
+        typename GlobalTransformerD::InputFragment fragment_d;
+
+        if (kBetaIsZero_) {
+          functor.evaluate(fetched_d, fragment_d);
+        } else {
+          // Transform C fragment.
+         transformer_c.transform(fragment_c, transformed_c);
+          // Do the math.
+          functor.evaluate(fetched_d, transformed_c, fragment_d);
+        }
+
+        // Transform D fragment.
+        typename GlobalTransformerD::OutputFragment transformed_d;
+        transformer_d.transform(fragment_d, transformed_d);
+
+        float local_x[2] = {0, 0};
+        float local_x_square[2] = {0, 0};
+        // Copy the results to global memory.
+        if (kMeanVarFusion_)
+          iterator_store_w(global_store_iterator, transformed_d, local_x, local_x_square);
+        else
+          iterator_store(global_store_iterator, transformed_d);
+        if (kMeanVarFusion_) {
+          shared_x_1[tid] = local_x[0];
+          shared_x_2[tid] = local_x[1];
+          shared_x_squared_1[tid] = local_x_square[0];
+          shared_x_squared_2[tid] = local_x_square[1];
+
+          shared_load_fence();
+
+          // Reduce the results of a block (256 threads) into 8 threads (0th, 32th, 64, 96, ... thread).
+          // ith thread in the 8 threads has (blockIdx.y * 128 + 64 * H + (i * 8))th row and (blockIdx.y * 128 + 64 * H + (i * 8) + 4)th row
+          if ((tid % 32) < 16) { // A chunk of 32 threads accesses the same row
+            shared_x_1[tid] += shared_x_1[tid + 16];
+            shared_x_2[tid] += shared_x_2[tid + 16];
+            shared_x_squared_1[tid] += shared_x_squared_1[tid + 16];
+            shared_x_squared_2[tid] += shared_x_squared_2[tid + 16];
+            shared_x_1[tid] += shared_x_1[tid + 8];
+            shared_x_2[tid] += shared_x_2[tid + 8];
+            shared_x_squared_1[tid] += shared_x_squared_1[tid + 8];
+            shared_x_squared_2[tid] += shared_x_squared_2[tid + 8];
+            shared_x_1[tid] += shared_x_1[tid + 4];
+            shared_x_2[tid] += shared_x_2[tid + 4];
+            shared_x_squared_1[tid] += shared_x_squared_1[tid + 4];
+            shared_x_squared_2[tid] += shared_x_squared_2[tid + 4];
+            shared_x_1[tid] += shared_x_1[tid + 2];
+            shared_x_2[tid] += shared_x_2[tid + 2];
+            shared_x_squared_1[tid] += shared_x_squared_1[tid + 2];
+            shared_x_squared_2[tid] += shared_x_squared_2[tid + 2];
+            shared_x_1[tid] += shared_x_1[tid + 1];
+            shared_x_2[tid] += shared_x_2[tid + 1];
+            shared_x_squared_1[tid] += shared_x_squared_1[tid + 1];
+            shared_x_squared_2[tid] += shared_x_squared_2[tid + 1];
+          }
+
+          // shared-memory level reduce
+          if (tid % 32 == 0) {
+            // ith row and (i+4)th row make a pair
+            int row_base = 64 * h + tid / 4 + w;
+            shared_reduced_x[row_base] = shared_x_1[tid];
+            shared_reduced_x[row_base + 4] = shared_x_2[tid];
+            shared_reduced_x_square[row_base] = shared_x_squared_1[tid];
+            shared_reduced_x_square[row_base + 4] = shared_x_squared_2[tid];
+          }
+        } // kMeanVarFusion
+      }
+    }
+
+    shared_store_fence();
+    // store the shared matrix into the global memory. gridDim.x * chan dim. (Channel first)
+    int ch_idx = blockIdx.y * 128 + tid;
+    if (kMeanVarFusion_) {
+      if (tid < 128 && ch_idx < n) {
+        // gridDim.y == (M + 127) / 128, gridDim.x = (N + 127) / 128
+        // Per-kernel mean/var accumulation should be adopted, with a support of cuncurrent kernel execution?
+        params.d_x[blockIdx.x * n + ch_idx] += (float) shared_reduced_x[tid];
+        params.d_x_square[blockIdx.x * n + ch_idx] += (float) shared_reduced_x_square[tid];
+      }
+    }
+  }
   /// The memory fence for shared loads.
   CUTLASS_DEVICE void shared_load_fence() { __syncthreads(); }
 
