@@ -66,6 +66,8 @@ void BatchNormLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
   sz.push_back(channels_);
   mean_.Reshape(sz);
   variance_.Reshape(sz);
+  caffe_set(mean_.count(), Dtype(0), mean_.mutable_cpu_data());
+  caffe_set(variance_.count(), Dtype(0), variance_.mutable_cpu_data());
   temp_.ReshapeLike(*bottom[0]);
   x_norm_.ReshapeLike(*bottom[0]);
   sz[0] = bottom[0]->shape(0);

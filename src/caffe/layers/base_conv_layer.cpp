@@ -316,6 +316,10 @@ void BaseConvolutionLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     ch_o.push_back(conv_out_channels_);
     mean_to_pass_.Reshape(ch_o);
     var_to_pass_.Reshape(ch_o);
+    caffe_set(mean_to_pass_.count(), Dtype(0),
+        mean_to_pass_.mutable_cpu_data());
+    caffe_set(var_to_pass_.count(), Dtype(0),
+        var_to_pass_.mutable_cpu_data());
 
     // temporal storages for reduction
     vector<int> ch_bx_shape;
@@ -325,6 +329,10 @@ void BaseConvolutionLayer<Dtype>::Reshape(const vector<Blob<Dtype>*>& bottom,
     // reshape the twos
     x_accum_temp_.Reshape(ch_bx_shape);
     x2_accum_temp_.Reshape(ch_bx_shape);
+    caffe_set(x_accum_temp_.count(), Dtype(0),
+        x_accum_temp_.mutable_cpu_data());
+    caffe_set(x2_accum_temp_.count(), Dtype(0),
+        x2_accum_temp_.mutable_cpu_data());
 
     // init gamma
     FillerParameter filler_param;
