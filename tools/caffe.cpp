@@ -54,6 +54,8 @@ DEFINE_string(sigint_effect, "stop",
 DEFINE_string(sighup_effect, "snapshot",
              "Optional; action to take when a SIGHUP signal is received: "
              "snapshot, stop or none.");
+DEFINE_bool(cupti, false,
+    "Optional; dump cupti trace ");
 
 // A simple registry for caffe commands.
 typedef int (*BrewFunction)();
@@ -237,6 +239,9 @@ int train() {
   }
 
   LOG(INFO) << "Starting Optimization";
+
+  if (FLAGS_cupti)
+    startCUptiTracing();
   if (gpus.size() > 1) {
 #ifdef USE_NCCL
     caffe::NCCL<float> nccl(solver);
@@ -247,6 +252,9 @@ int train() {
   } else {
     solver->Solve();
   }
+  if (FLAGS_cupti)
+    endCUptiTracing();
+
   LOG(INFO) << "Optimization Done.";
   return 0;
 }

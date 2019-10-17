@@ -17,7 +17,21 @@
 #include "caffe/util/math_functions.hpp"
 #include "caffe/util/upgrade_proto.hpp"
 
+#include <chrono>
+#include <sys/types.h>
+#include <unistd.h>
+#include <thread>
+#include <sstream>
+
 namespace caffe {
+
+double get_nanoseconds()
+{
+  std::chrono::nanoseconds ns = std::chrono::duration_cast< std::chrono::nanoseconds >(
+    std::chrono::system_clock::now().time_since_epoch()
+  );
+  return ns.count();
+}
 
 template <typename Dtype>
 Net<Dtype>::Net(const NetParameter& param) {
@@ -517,26 +531,46 @@ Dtype Net<Dtype>::ForwardFromTo(int start, int end) {
   CHECK_GE(start, 0);
   CHECK_LT(end, layers_.size());
   Dtype loss = 0;
+
+  //int pid = (int)getpid();
+  std::string logname = "marker.txt";
+  FILE *log = fopen(logname.c_str(), "a");
+  setbuf(log, NULL);
+
+  std::vector<std::pair<std::string, double> > t0;
+  std::vector<std::pair<std::string, double> > t1;
+
   for (int i = start; i <= end; ++i) {
     for (int c = 0; c < before_forward_.size(); ++c) {
       before_forward_[c]->run(i);
     }
-    printf("@jungwk: [Forward] %s\n", layer_names_[i].c_str());
-    struct timespec t_start, t_end;
-    double t_time=0;
-    cudaDeviceSynchronize();
-    clock_gettime(CLOCK_REALTIME, &t_start);
+    //printf("@jungwk: [Forward] %s\n", layer_names_[i].c_str());
+    //struct timespec t_start, t_end;
+    //double t_time=0;
+    //cudaDeviceSynchronize();
+    //clock_gettime(CLOCK_REALTIME, &t_start);
+    //if (layer_names_[i] != "data")
+    //    fprintf(log, "start\t%s_FF\t%.0lf\n", layer_names_[i].c_str(), get_nanoseconds());
+    t0.push_back(std::pair<std::string, double>(layer_names_[i], get_nanoseconds()));
     Dtype layer_loss = layers_[i]->Forward(bottom_vecs_[i], top_vecs_[i]);
-    cudaDeviceSynchronize();
-    clock_gettime(CLOCK_REALTIME, &t_end);
-    t_time = (((double)t_end.tv_sec - (double)t_start.tv_sec)
-        + ((double)t_end.tv_nsec - (double)t_start.tv_nsec)/1000000000);
-    printf("exec time %.6f\n", t_time);
+    t1.push_back(std::pair<std::string, double>(layer_names_[i], get_nanoseconds()));
+    //if (layer_names_[i] != "data")
+    //    fprintf(log, "stop\t%s_FF\t%.0lf\n", layer_names_[i].c_str(), get_nanoseconds());
+    //cudaDeviceSynchronize();
+    //clock_gettime(CLOCK_REALTIME, &t_end);
+    //t_time = (((double)t_end.tv_sec - (double)t_start.tv_sec)
+    //    + ((double)t_end.tv_nsec - (double)t_start.tv_nsec)/1000000000);
+    //printf("exec time %.6f\n", t_time);
     loss += layer_loss;
     if (debug_info_) { ForwardDebugInfo(i); }
     for (int c = 0; c < after_forward_.size(); ++c) {
       after_forward_[c]->run(i);
     }
+  }
+  for (int i = 0; i < t0.size(); ++ i)
+  {
+    fprintf(log, "start\t%s_FF\t%.0lf\n", t0[i].first.c_str(), t0[i].second);
+    fprintf(log, "stop\t%s_FF\t%.0lf\n", t1[i].first.c_str(), t1[i].second);
   }
   return loss;
 }
@@ -577,29 +611,47 @@ template <typename Dtype>
 void Net<Dtype>::BackwardFromTo(int start, int end) {
   CHECK_GE(end, 0);
   CHECK_LT(start, layers_.size());
+
+  //int pid = (int)getpid();
+  std::string logname = "marker.txt";
+  FILE *log = fopen(logname.c_str(), "a");
+  setbuf(log, NULL);
+
+  std::vector<std::pair<std::string, double> > t0;
+  std::vector<std::pair<std::string, double> > t1;
+
   for (int i = start; i >= end; --i) {
     for (int c = 0; c < before_backward_.size(); ++c) {
       before_backward_[c]->run(i);
     }
     if (layer_need_backward_[i]) {
-      printf("@jungwk: [Backward] %s\n", layer_names_[i].c_str());
-      struct timespec t_start, t_end;
-      double t_time=0;
-      cudaDeviceSynchronize();
-      clock_gettime(CLOCK_REALTIME, &t_start);
-
+      //printf("@jungwk: [Backward] %s\n", layer_names_[i].c_str());
+      //struct timespec t_start, t_end;
+      //double t_time=0;
+      //cudaDeviceSynchronize();
+      //clock_gettime(CLOCK_REALTIME, &t_start);
+      //fprintf(log, "start\t%s_BP\t%.0lf\n", layer_names_[i].c_str(), get_nanoseconds());
+      t0.push_back(std::pair<std::string, double>(layer_names_[i], get_nanoseconds()));
       layers_[i]->Backward(
           top_vecs_[i], bottom_need_backward_[i], bottom_vecs_[i]);
-      cudaDeviceSynchronize();
-      clock_gettime(CLOCK_REALTIME, &t_end);
-      t_time = (((double)t_end.tv_sec - (double)t_start.tv_sec)
-          + ((double)t_end.tv_nsec - (double)t_start.tv_nsec)/1000000000);
-      printf("exec time %.6f\n", t_time);
+      t1.push_back(std::pair<std::string, double>(layer_names_[i], get_nanoseconds()));
+      //fprintf(log, "stop\t%s_BP\t%.0lf\n", layer_names_[i].c_str(), get_nanoseconds());
+      //cudaDeviceSynchronize();
+      //clock_gettime(CLOCK_REALTIME, &t_end);
+      //t_time = (((double)t_end.tv_sec - (double)t_start.tv_sec)
+      //    + ((double)t_end.tv_nsec - (double)t_start.tv_nsec)/1000000000);
+      //printf("exec time %.6f\n", t_time);
       if (debug_info_) { BackwardDebugInfo(i); }
     }
     for (int c = 0; c < after_backward_.size(); ++c) {
       after_backward_[c]->run(i);
     }
+  }
+
+  for (int i = 0; i < t0.size(); ++ i)
+  {
+    fprintf(log, "start\t%s_BP\t%.0lf\n", t0[i].first.c_str(), t0[i].second);
+    fprintf(log, "stop\t%s_BP\t%.0lf\n", t1[i].first.c_str(), t1[i].second);
   }
 }
 
